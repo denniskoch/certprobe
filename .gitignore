@@ -1,0 +1,24 @@
+# Binaries (local dev + distribution builds)
+bin/
+dist/
+
+# Output from test coverage
+coverage.out
+
+# Dependency / build caches
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# IDE / Editor artifacts
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS junk
+.DS_Store
+
+# Go build artifacts
+*.log

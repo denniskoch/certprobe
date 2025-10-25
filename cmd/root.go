@@ -29,6 +29,13 @@ const (
 	colorGray   = "250"
 )
 
+// Populated via -ldflags at build time.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 var (
 	host      string
 	hostAddr  string
@@ -46,8 +53,8 @@ var p = termenv.ColorProfile()
 
 var rootCmd = &cobra.Command{
 	Use:   "certprobe",
-	Short: "certprobe - instpect SSL/TLS certificates",
-	Long: `certprobe connects to a host and displays certificate informatin
+	Short: "certprobe - inspect SSL/TLS certificates",
+	Long: `certprobe connects to a host and displays certificate information
 	such as issuer, expiry, and chain details.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 
@@ -100,7 +107,7 @@ func init() {
 	rootCmd.Flags().IntVarP(&port, "port", "p", 443, "Port to connect to (1-65535)")
 
 	rootCmd.Flags().StringVarP(&resolvers, "resolvers", "r", "system",
-		"Comma-seperated resolvers (e.g., 'system' or '8.8.8.8,8.8.4.4')")
+		"Comma-separated resolvers (e.g., 'system' or '8.8.8.8,8.8.4.4')")
 
 	rootCmd.Flags().BoolVarP(&forceIPv4, "ipv4", "4", false, "Force IPv4 queries only (no AAAA lookups)")
 	rootCmd.Flags().BoolVarP(&forceIPv6, "ipv6", "6", false, "Force IPv6 queries only (no A lookups)")
@@ -214,7 +221,7 @@ func retrieveCertificate(host, addr string, port int) error {
 		commonName := colorize(cert.Subject.CommonName, colorGray, true)
 		subjectAltName := colorize(strings.Join(cert.DNSNames, ", "), colorGray, true)
 		validity := formatValidity(cert)
-		signatureAlogithm := cert.SignatureAlgorithm.String()
+		SignatureAlgorithm := cert.SignatureAlgorithm.String()
 
 		serverKeySize := serverKeyString(cert)
 		serverKeyUsage := serverKeyUsageString(cert)
@@ -236,7 +243,7 @@ func retrieveCertificate(host, addr string, port int) error {
 		printField("Common Name (CN)", commonName)
 		printField("subjectAltName (SAN)", subjectAltName)
 		printField("Certificate Validity (UTC)", validity)
-		printField("Signature Algorithm", signatureAlogithm)
+		printField("Signature Algorithm", SignatureAlgorithm)
 		printField("Server key size", serverKeySize)
 		printField("Server key usage", serverKeyUsage)
 		printField("Server extended key usage", serverKeyExtendedKeyUsage)

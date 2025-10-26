@@ -1,3 +1,4 @@
+![certprobe gopher](docs/assets/certprobe-gopher.png)
 # certprobe
 
 **certprobe** is a command-line TLS/SSL certificate inspection tool.

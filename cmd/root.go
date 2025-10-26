@@ -1,23 +1,18 @@
 package cmd
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
-	"crypto/sha1"
-	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/denniskoch/certprobe/internal/probe"
+	"github.com/denniskoch/certprobe/internal/resolver"
 	"github.com/denniskoch/certprobe/internal/version"
 	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
@@ -63,25 +58,35 @@ var rootCmd = &cobra.Command{
 		}
 
 		if hostAddr != "" {
-
+			// handle ip specified in cmd
 		} else {
-			if err := validateResolver(resolvers); err != nil {
-				return err
+			system, resolvers, err := resolver.ParseResolversFromFlag(resolvers)
+			if err != nil {
+				return fmt.Errorf("invalid --resolvers value: %w", err)
 			}
 
-			ips, err := resolveHost(host, resolvers, 3*time.Second)
+			ips, err := resolver.Resolve(cmd.Context(), host, resolver.Options{
+				System:   system,
+				Servers:  resolvers,
+				IPv4:     forceIPv4 || !forceIPv6, // default both if neither set
+				IPv6:     forceIPv6 || !forceIPv4,
+				Timeout:  3 * time.Second,
+				MaxCNAME: 5,
+			})
+
 			if err != nil {
-				return fmt.Errorf("resolve %s failed", host)
+				return fmt.Errorf("resolve %s failed: %w", host, err)
 			}
+
 			if len(ips) == 0 {
 				return fmt.Errorf("no IPs returned for %q", host)
 			}
-
-			hostAddr = ips[0]
-			logger.Info("selected address for probe", "ip", hostAddr)
 		}
 
-		_ = retrieveCertificate(host, hostAddr, port)
+		_, err := probe.GetCertificate(host, hostAddr, port, 5*time.Second)
+		if err != nil {
+			return err
+		}
 
 		return nil
 	},
@@ -100,17 +105,13 @@ func init() {
 	_ = rootCmd.MarkFlagRequired("host")
 	rootCmd.Flags().StringVar(&hostAddr, "addr", "", "Target network address (bypasses DNS if set)")
 	rootCmd.Flags().IntVarP(&port, "port", "p", 443, "Port to connect to (1-65535)")
-
 	rootCmd.Flags().StringVarP(&resolvers, "resolvers", "r", "system",
 		"Comma-separated resolvers (e.g., 'system' or '8.8.8.8,8.8.4.4')")
-
 	rootCmd.Flags().BoolVarP(&forceIPv4, "ipv4", "4", false, "Force IPv4 queries only (no AAAA lookups)")
 	rootCmd.Flags().BoolVarP(&forceIPv6, "ipv6", "6", false, "Force IPv6 queries only (no A lookups)")
 	rootCmd.MarkFlagsMutuallyExclusive("ipv4", "ipv6")
-
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "V", false, "Enable verbose output (info level)")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging (overrides --verbose)")
-
 	rootCmd.Flags().SortFlags = false
 	rootCmd.PersistentFlags().SortFlags = false
 
@@ -134,122 +135,6 @@ func initLogger() {
 	logger = slog.New(handler)
 
 	logger.Debug("logger initialized", "level", level.String())
-}
-
-func validateResolver(r string) error {
-	r = strings.TrimSpace(r)
-
-	if r == "" {
-		return fmt.Errorf("resolver cannot be empty")
-	}
-
-	if strings.EqualFold(r, "system") {
-		return nil
-	}
-
-	host, port, err := net.SplitHostPort(r)
-	if err == nil {
-		if _, err := netip.ParseAddr(host); err != nil {
-			return fmt.Errorf("invalid resolver address %q", host)
-		}
-		if _, err := strconv.Atoi(port); err != nil {
-			return fmt.Errorf("invalid port %q in resolver", port)
-		}
-	}
-
-	if _, err := netip.ParseAddr(r); err != nil {
-		return fmt.Errorf("invalid resolver address %q", r)
-	}
-	return nil
-}
-
-func resolveHost(name, resolvers string, to time.Duration) ([]string, error) {
-
-	if strings.EqualFold(resolvers, "system") {
-		ctx, cancel := context.WithTimeout(context.Background(), to)
-		defer cancel()
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", name)
-		if err != nil {
-			return nil, err
-		}
-		return uniqueIPs(ips), nil
-	}
-
-	return nil, nil
-}
-
-func uniqueIPs(in []net.IP) []string {
-	set := make(map[string]struct{})
-
-	for _, ip := range in {
-		if ip == nil {
-			continue
-		}
-		fmt.Println(ip.String())
-		set[ip.String()] = struct{}{}
-	}
-
-	out := make([]string, 0, len(set))
-	for s := range set {
-		out = append(out, s)
-	}
-
-	return out
-}
-
-func retrieveCertificate(host, addr string, port int) error {
-
-	portStr := strconv.Itoa(port)
-	target := net.JoinHostPort(addr, portStr)
-
-	conn, err := tls.Dial("tcp", target, &tls.Config{
-		InsecureSkipVerify: true,
-		ServerName:         host})
-	if err != nil {
-		return fmt.Errorf("TLS connect failed: %w", err)
-	}
-	defer conn.Close()
-
-	state := conn.ConnectionState()
-	for i, cert := range state.PeerCertificates {
-
-		commonName := colorize(cert.Subject.CommonName, colorGray, true)
-		subjectAltName := colorize(strings.Join(cert.DNSNames, ", "), colorGray, true)
-		validity := formatValidity(cert)
-		SignatureAlgorithm := cert.SignatureAlgorithm.String()
-
-		serverKeySize := serverKeyString(cert)
-		serverKeyUsage := serverKeyUsageString(cert)
-		serverKeyExtendedKeyUsage := serverExtKeyUsageString(cert)
-		issuerOrg := strings.Join(cert.Issuer.Organization, ", ")
-		issuer := colorize(fmt.Sprintf("%s (%s)", cert.Issuer.CommonName, issuerOrg), colorGray, false)
-		isCA := "No"
-		if cert.IsCA {
-			isCA = "Yes"
-		}
-		serial := colorize(fmt.Sprintf("%X (OK: length %d)",
-			cert.SerialNumber, len(cert.SerialNumber.Bytes())), colorGray, false)
-		sha1sum := sha1.Sum(cert.Raw)
-		sha1 := fmt.Sprintf("SHA1 %s", formatFingerprint(sha1sum[:]))
-		sha256sum := sha256.Sum256(cert.Raw)
-		sha256 := fmt.Sprintf("SHA256 %s", formatFingerprint(sha256sum[:]))
-
-		fmt.Printf("[%d]\n", i)
-		printField("Common Name (CN)", commonName)
-		printField("subjectAltName (SAN)", subjectAltName)
-		printField("Certificate Validity (UTC)", validity)
-		printField("Signature Algorithm", SignatureAlgorithm)
-		printField("Server key size", serverKeySize)
-		printField("Server key usage", serverKeyUsage)
-		printField("Server extended key usage", serverKeyExtendedKeyUsage)
-		printField("Is Certificate Authority", isCA)
-		printField("Issuer", issuer)
-		printField("Serial", serial)
-		printField("Fingerprints", sha1)
-		printField("", sha256)
-
-	}
-	return nil
 }
 
 func formatValidity(cert *x509.Certificate) string {

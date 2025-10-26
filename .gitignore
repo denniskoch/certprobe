@@ -22,3 +22,5 @@ coverage.out
 
 # Go build artifacts
 *.log
+
+_notes

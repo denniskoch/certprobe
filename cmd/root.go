@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denniskoch/certprobe/internal/version"
 	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 )
@@ -27,13 +28,6 @@ const (
 	colorYellow = "220"
 	colorRed    = "196"
 	colorGray   = "250"
-)
-
-// Populated via -ldflags at build time.
-var (
-	version = "dev"
-	commit  = "none"
-	date    = "unknown"
 )
 
 var (
@@ -101,6 +95,7 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.Version = fmt.Sprintf("%s (%s, %s)", version.Version, version.Commit, version.Date)
 	rootCmd.Flags().StringVarP(&host, "host", "t", "", "Hostname to scan (required)")
 	_ = rootCmd.MarkFlagRequired("host")
 	rootCmd.Flags().StringVar(&hostAddr, "addr", "", "Target network address (bypasses DNS if set)")
@@ -113,7 +108,7 @@ func init() {
 	rootCmd.Flags().BoolVarP(&forceIPv6, "ipv6", "6", false, "Force IPv6 queries only (no A lookups)")
 	rootCmd.MarkFlagsMutuallyExclusive("ipv4", "ipv6")
 
-	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output (info level)")
+	rootCmd.Flags().BoolVarP(&verbose, "verbose", "V", false, "Enable verbose output (info level)")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging (overrides --verbose)")
 
 	rootCmd.Flags().SortFlags = false

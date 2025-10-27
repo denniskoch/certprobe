@@ -8,10 +8,13 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/fatih/color"
 
 	"github.com/denniskoch/certprobe/internal/probe"
 )
@@ -28,38 +31,71 @@ type Options struct {
 
 func RenderSummary(ctx context.Context, res *probe.Result, opt Options) error {
 
-	// Text mode (aligned, friendly)
-	w := os.Stdout
-	tw := tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
+	tw := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', tabwriter.StripEscape)
+
 	fmt.Fprintf(tw, "Target:\t%s (%s)\n", opt.Host, opt.Addr)
 	fmt.Fprintf(tw, "TLS:\t%s / %s\n", res.TLSVersion, res.CipherSuite)
-	fmt.Fprintf(tw, "\n")
+	if res.OCSPStapled {
+		fmt.Fprintf(tw, "OCSP Stapling:\tYes\n")
+	} else {
+		fmt.Fprintf(tw, "OCSP Stapling:\tNo\n")
+	}
+	fmt.Fprintln(tw)
+
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		slog.Debug("system pool not available; using empty root pool", "err", err)
+		roots = x509.NewCertPool()
+	}
+
+	inter := x509.NewCertPool()
+	if len(res.PeerCertificates) > 1 {
+		for _, ic := range res.PeerCertificates[1:] {
+			inter.AddCert(ic)
+		}
+	}
 
 	for i, cert := range res.PeerCertificates {
-		fmt.Fprintf(tw, "Cert #%d:\n", i)
+
+		if i > 0 {
+			fmt.Fprintf(tw, "- Certificate %d \n", i)
+		} else {
+			fmt.Fprintf(tw, "- Certificate %d (Leaf)\n", i)
+		}
 		fmt.Fprintf(tw, "\tCommon Name (CN)\t%s\n", cert.Subject.CommonName)
 		fmt.Fprintf(tw, "\tsubjectAltName (SAN)\t%s\n", formatSubjectAltName(cert))
+		fmt.Fprintf(tw, "\tTrust\t%s\n", formatTrust(cert, roots, inter))
 		fmt.Fprintf(tw, "\tCertificate Validity (UTC)\t%s\n", formatValidity(cert))
-		fmt.Fprintf(tw, "\tSignature Algorithm\t%s\n", cert.SignatureAlgorithm)
+		fmt.Fprintf(tw, "\tSignature Algorithm\t%s\n", formatSignatureAlgorithm(cert))
 		fmt.Fprintf(tw, "\tKey Usage\t%s\n", formatKeyUsage(cert))
 		fmt.Fprintf(tw, "\tExtended Key Usage\t%s\n", formatExtKeyUsage(cert))
 		fmt.Fprintf(tw, "\tSerial\t%s\n", formatSerial(cert))
 		fmt.Fprintf(tw, "\tFingerprint (SHA-1)\t%s\n", formatFingerprint(cert, "sha1"))
 		fmt.Fprintf(tw, "\t\t%s\n", formatFingerprint(cert, "sha256"))
-		fmt.Fprintf(tw, "\tIssuer\t%s\n", cert.Issuer.CommonName)
+		fmt.Fprintf(tw, "\tIssuer\t%s\n", cert.Issuer.CommonName+" ("+cert.Issuer.Organization[0]+")")
 
 		fmt.Fprintf(tw, "\n")
 	}
-	//fmt.Fprintf(tw, "Hostname:\t%v\n", ver != nil && ver.HostnameOK)
-	//fmt.Fprintf(tw, "Trusted (Chain):\t%v\n", ver != nil && ver.ChainOK)
-	//fmt.Fprintf(tw, "Expires In:\t%d days\n", zeroIfNil(ver, func(v *verify.Verdict) int { return v.DaysRemaining }))
-	//fmt.Fprintf(tw, "Leaf CN:\t%s\n", leafCN(res))
-	//fmt.Fprintf(tw, "Issuer:\t%s\n", leafIssuer(res))
-	//fmt.Fprintf(tw, "OCSP Stapled:\t%v\n", res.OCSPStapled)
 
 	_ = tw.Flush()
 
 	return nil
+}
+
+func formatTrust(cert *x509.Certificate, roots, inter *x509.CertPool) string {
+
+	opts := x509.VerifyOptions{
+		Roots:         roots, // trust anchors
+		Intermediates: inter, // any intermediate certs
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	}
+
+	_, err := cert.Verify(opts)
+	if err != nil {
+		return color.New(color.FgYellow).Sprint("Not Trusted")
+	}
+
+	return color.New(color.FgGreen).Sprint("OK")
 }
 
 func formatValidity(cert *x509.Certificate) string {
@@ -75,10 +111,23 @@ func formatValidity(cert *x509.Certificate) string {
 		status = "<"
 	}
 
-	validity := fmt.Sprintf("%d %s %d days (%s --> %s)",
+	d := fmt.Sprintf("%d %s %d days",
 		remaining,
 		status,
 		warnDays,
+	)
+
+	switch {
+	case remaining < 0:
+		d = color.New(color.FgRed).Sprint(d)
+	case remaining <= warnDays:
+		d = color.New(color.FgYellow).Sprint(d)
+	default:
+		d = color.New(color.FgGreen).Sprint(d)
+	}
+
+	validity := fmt.Sprintf("%s (%s --> %s)",
+		d,
 		notBefore.Format("2006-01-02 15:04"),
 		notAfter.Format("2006-01-02 15:04"),
 	)
@@ -102,6 +151,34 @@ func formatSubjectAltName(cert *x509.Certificate) string {
 	}
 
 	return strings.Join(sans, ", ")
+}
+
+func formatSignatureAlgorithm(cert *x509.Certificate) string {
+	alg := cert.SignatureAlgorithm
+	switch alg {
+	case x509.SHA256WithRSA:
+		return color.New(color.FgGreen).Sprint("SHA-256 with RSA")
+	case x509.SHA384WithRSA:
+		return color.New(color.FgGreen).Sprint("SHA-384 with RSA")
+	case x509.SHA512WithRSA:
+		return color.New(color.FgGreen).Sprint("SHA-512 with RSA")
+	case x509.SHA1WithRSA:
+		return color.New(color.FgYellow).Sprint("SHA-1 with RSA (legacy)")
+	case x509.ECDSAWithSHA256:
+		return "ECDSA with SHA-256"
+	case x509.ECDSAWithSHA384:
+		return "ECDSA with SHA-384"
+	case x509.ECDSAWithSHA512:
+		return "ECDSA with SHA-512"
+	case x509.PureEd25519:
+		return "Ed25519"
+	case x509.DSAWithSHA1:
+		return color.New(color.FgYellow).Sprint("DSA with SHA-1 (legacy)")
+	case x509.DSAWithSHA256:
+		return "DSA with SHA-256"
+	default:
+		return alg.String()
+	}
 }
 
 func formatKeyUsage(cert *x509.Certificate) string {

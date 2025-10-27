@@ -70,7 +70,7 @@ func RenderSummary(ctx context.Context, res *probe.Result, opt Options) error {
 		fmt.Fprintf(tw, "\tKey Usage\t%s\n", formatKeyUsage(cert))
 		fmt.Fprintf(tw, "\tExtended Key Usage\t%s\n", formatExtKeyUsage(cert))
 		fmt.Fprintf(tw, "\tSerial\t%s\n", formatSerial(cert))
-		fmt.Fprintf(tw, "\tFingerprint (SHA-1)\t%s\n", formatFingerprint(cert, "sha1"))
+		fmt.Fprintf(tw, "\tFingerprint\t%s\n", formatFingerprint(cert, "sha1"))
 		fmt.Fprintf(tw, "\t\t%s\n", formatFingerprint(cert, "sha256"))
 		fmt.Fprintf(tw, "\tIssuer\t%s\n", cert.Issuer.CommonName+" ("+cert.Issuer.Organization[0]+")")
 

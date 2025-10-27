@@ -11,7 +11,6 @@ import (
 	"github.com/denniskoch/certprobe/internal/probe"
 	"github.com/denniskoch/certprobe/internal/resolver"
 	"github.com/denniskoch/certprobe/internal/version"
-	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
 )
 
@@ -27,8 +26,6 @@ var (
 
 	logger *slog.Logger
 )
-
-var p = termenv.ColorProfile()
 
 var rootCmd = &cobra.Command{
 	Use:   "certprobe",

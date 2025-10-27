@@ -1,9 +1,11 @@
 package probe
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"time"
@@ -16,25 +18,36 @@ type Result struct {
 	OCSPStapled      bool
 }
 
-func GetCertificate(hostname, addr string, port int, timeout time.Duration) (*Result, error) {
+func GetCertificate(ctx context.Context, hostname, addr string, port int, timeout time.Duration) (*Result, error) {
+	//start := time.Now()
 	target := net.JoinHostPort(addr, strconv.Itoa(port))
 
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", target, &tls.Config{
-		InsecureSkipVerify: true, // 🔥 still required to fetch untrusted certs
-		ServerName:         hostname,
-	})
+	slog.Debug("tls: dial start",
+		"target", target,
+		"sni", hostname,
+		"timeout", timeout)
+
+	td := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: timeout},
+		Config: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         hostname,
+		},
+	}
+
+	conn, err := td.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return nil, fmt.Errorf("TLS connect failed: %w", err)
 	}
 	defer conn.Close()
 
-	state := conn.ConnectionState()
+	cs := conn.(*tls.Conn).ConnectionState()
 
 	return &Result{
-		PeerCertificates: state.PeerCertificates,
-		TLSVersion:       tlsVersionString(state.Version),
-		CipherSuite:      tls.CipherSuiteName(state.CipherSuite),
-		OCSPStapled:      len(state.OCSPResponse) > 0,
+		PeerCertificates: cs.PeerCertificates,
+		TLSVersion:       tlsVersionString(cs.Version),
+		CipherSuite:      tls.CipherSuiteName(cs.CipherSuite),
+		OCSPStapled:      len(cs.OCSPResponse) > 0,
 	}, nil
 }
 

@@ -1,28 +1,18 @@
 package cmd
 
 import (
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/rsa"
-	"crypto/x509"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
-	"strings"
 	"time"
 
+	"github.com/denniskoch/certprobe/internal/format"
 	"github.com/denniskoch/certprobe/internal/probe"
 	"github.com/denniskoch/certprobe/internal/resolver"
 	"github.com/denniskoch/certprobe/internal/version"
 	"github.com/muesli/termenv"
 	"github.com/spf13/cobra"
-)
-
-const (
-	colorGreen  = "34"
-	colorYellow = "220"
-	colorRed    = "196"
-	colorGray   = "250"
 )
 
 var (
@@ -47,25 +37,28 @@ var rootCmd = &cobra.Command{
 	such as issuer, expiry, and chain details.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 
-		logger.Info("starting certprobe",
+		ctx := cmd.Context()
+
+		logger.Debug("starting certprobe",
 			"host", host,
 			"port", port,
 			"resolvers", resolvers,
 		)
 
+		if host == "" && hostAddr == "" {
+			return fmt.Errorf("either --host or --addr is required")
+		}
 		if port < 1 || port > 65535 {
 			return fmt.Errorf("invalid --port %d (must be 1..65535)", port)
 		}
 
-		if hostAddr != "" {
-			// handle ip specified in cmd
-		} else {
+		if hostAddr == "" {
 			system, resolvers, err := resolver.ParseResolversFromFlag(resolvers)
 			if err != nil {
 				return fmt.Errorf("invalid --resolvers value: %w", err)
 			}
 
-			ips, err := resolver.Resolve(cmd.Context(), host, resolver.Options{
+			ips, err := resolver.Resolve(ctx, host, resolver.Options{
 				System:   system,
 				Servers:  resolvers,
 				IPv4:     forceIPv4 || !forceIPv6, // default both if neither set
@@ -81,14 +74,24 @@ var rootCmd = &cobra.Command{
 			if len(ips) == 0 {
 				return fmt.Errorf("no IPs returned for %q", host)
 			}
+
+			hostAddr = ips[0]
+			slog.Debug("dns: selected address", "host", host, "addr", hostAddr)
 		}
 
-		_, err := probe.GetCertificate(host, hostAddr, port, 5*time.Second)
+		if net.ParseIP(hostAddr) == nil {
+			return fmt.Errorf("invalid --addr %q (must be an IP literal)", hostAddr)
+		}
+
+		res, err := probe.GetCertificate(ctx, host, hostAddr, port, 5*time.Second)
 		if err != nil {
 			return err
 		}
 
-		return nil
+		return format.RenderSummary(ctx, res, format.Options{
+			Host: host,
+			Addr: hostAddr,
+		})
 	},
 }
 
@@ -128,140 +131,11 @@ func initLogger() {
 	case verbose:
 		level = slog.LevelInfo
 	default:
-		level = slog.LevelWarn // only warnings/errors
+		level = slog.LevelWarn
 	}
 
 	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})
 	logger = slog.New(handler)
 
 	logger.Debug("logger initialized", "level", level.String())
-}
-
-func formatValidity(cert *x509.Certificate) string {
-	const warnDays = 60
-	notBefore := cert.NotBefore.UTC()
-	notAfter := cert.NotAfter.UTC()
-
-	now := time.Now().UTC()
-	remaining := int(notAfter.Sub(now).Hours() / 24)
-
-	status := ">="
-	if remaining < warnDays {
-		status = "<"
-	}
-
-	var color string
-
-	switch {
-	case remaining < 0:
-		color = colorRed
-	case remaining < warnDays:
-		color = colorYellow
-	default:
-		color = colorGreen
-	}
-
-	validity := fmt.Sprintf("%d %s %d days (%s --> %s)",
-		remaining,
-		status,
-		warnDays,
-		notBefore.Format("2006-01-02 15:04"),
-		notAfter.Format("2006-01-02 15:04"),
-	)
-
-	return colorize(validity, color, false)
-}
-
-func serverKeyString(cert *x509.Certificate) string {
-	switch pub := cert.PublicKey.(type) {
-	case *rsa.PublicKey:
-		return fmt.Sprintf("RSA %d bits (exponent is %d)", pub.Size()*8, pub.E)
-	case *ecdsa.PublicKey:
-		return fmt.Sprintf("ECDSA %s", pub.Params().Name)
-	case ed25519.PublicKey:
-		return "Ed25519"
-	default:
-		return fmt.Sprintf("Unknown key type (%T)", pub)
-	}
-}
-
-func serverKeyUsageString(cert *x509.Certificate) string {
-	if cert == nil {
-		return ""
-	}
-
-	usages := []string{}
-	m := map[x509.KeyUsage]string{
-		x509.KeyUsageDigitalSignature:  "Digital Signature",
-		x509.KeyUsageContentCommitment: "Content Commitment",
-		x509.KeyUsageKeyEncipherment:   "Key Encipherment",
-		x509.KeyUsageDataEncipherment:  "Data Encipherment",
-		x509.KeyUsageKeyAgreement:      "Key Agreement",
-		x509.KeyUsageCertSign:          "Cert Sign",
-		x509.KeyUsageCRLSign:           "CRL Sign",
-		x509.KeyUsageEncipherOnly:      "Encipher Only",
-		x509.KeyUsageDecipherOnly:      "Decipher Only",
-	}
-
-	for bit, label := range m {
-		if cert.KeyUsage&bit != 0 {
-			usages = append(usages, label)
-		}
-	}
-
-	if len(usages) == 0 {
-		return "–"
-	}
-	return strings.Join(usages, ", ")
-}
-
-func serverExtKeyUsageString(cert *x509.Certificate) string {
-	if cert == nil {
-		return ""
-	}
-
-	if len(cert.ExtKeyUsage) == 0 {
-		return "–"
-	}
-
-	m := map[x509.ExtKeyUsage]string{
-		x509.ExtKeyUsageServerAuth:      "TLS Web Server Authentication",
-		x509.ExtKeyUsageClientAuth:      "TLS Web Client Authentication",
-		x509.ExtKeyUsageCodeSigning:     "Code Signing",
-		x509.ExtKeyUsageEmailProtection: "Email Protection",
-		x509.ExtKeyUsageTimeStamping:    "Time Stamping",
-		x509.ExtKeyUsageOCSPSigning:     "OCSP Signing",
-	}
-
-	out := []string{}
-	for _, usage := range cert.ExtKeyUsage {
-		if label, ok := m[usage]; ok {
-			out = append(out, label)
-		} else {
-			out = append(out, fmt.Sprintf("ExtKeyUsage(%d)", usage))
-		}
-	}
-
-	return strings.Join(out, ", ")
-}
-
-func colorize(s, color string, italic bool) string {
-	out := termenv.String(s).Foreground(p.Color(color))
-	if italic {
-		out = out.Italic()
-	}
-	return out.String()
-}
-
-func printField(label string, value any) {
-	const labelWidth = 30
-	fmt.Printf(" %-*s %v\n", labelWidth, label, value)
-}
-
-func formatFingerprint(b []byte) string {
-	parts := make([]string, len(b))
-	for i, v := range b {
-		parts[i] = fmt.Sprintf("%02X", v)
-	}
-	return strings.Join(parts, ":")
 }

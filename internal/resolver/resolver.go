@@ -26,6 +26,7 @@ func Resolve(ctx context.Context, name string, opt Options) ([]string, error) {
 	if opt.MaxCNAME <= 0 {
 		opt.MaxCNAME = 5
 	}
+
 	if opt.System {
 		return resolveSystem(ctx, name, opt)
 	}
